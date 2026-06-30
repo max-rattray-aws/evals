@@ -1,3 +1,5 @@
+from enum import Enum
+
 from pydantic import BaseModel
 from typing_extensions import Any, Generic, TypedDict, TypeVar
 
@@ -109,6 +111,31 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     expected_environment_state: list[EnvironmentState] | None = None
 
 
+class EvaluationClassification(str, Enum):
+    """How an evaluator's output should be treated when aggregating results.
+
+    Lets an evaluator distinguish a genuine scored verdict from a case it could
+    not score, so that "not evaluated" is not silently collapsed into a failing
+    score. Non-graded outputs are excluded from the default aggregate score and
+    pass/fail verdict, but are preserved verbatim in the report's
+    ``detailed_results`` for downstream consumers (e.g. risk classification).
+
+    Attributes:
+        GRADED: A normal scored verdict that contributes to the aggregate score
+            and pass/fail. This is the default, so existing evaluators are
+            unaffected.
+        COULD_NOT_EVALUATE: The evaluator could not produce a judgement for this
+            case (e.g. preconditions were not met or required data was missing).
+            Excluded from the aggregate so it does not count as a failure.
+        INFORMATIONAL: A diagnostic signal recorded for context only; never
+            contributes to the aggregate score or pass/fail.
+    """
+
+    GRADED = "graded"
+    COULD_NOT_EVALUATE = "could_not_evaluate"
+    INFORMATIONAL = "informational"
+
+
 class EvaluationOutput(BaseModel):
     """
     Structured output for LLM-based judge.
@@ -118,9 +145,14 @@ class EvaluationOutput(BaseModel):
         test_pass: Whether the test pass or fail.
         reason: The reason for the score for each test case.
         label: The categorical label corresponding to the score.
+        classification: How this output should be treated during aggregation.
+            Defaults to ``GRADED``. Outputs marked ``COULD_NOT_EVALUATE`` or
+            ``INFORMATIONAL`` are excluded from the default aggregate score and
+            pass/fail verdict (see ``Evaluator._default_aggregator``).
     """
 
     score: float
     test_pass: bool
     reason: str | None = None
     label: str | None = None
+    classification: EvaluationClassification = EvaluationClassification.GRADED

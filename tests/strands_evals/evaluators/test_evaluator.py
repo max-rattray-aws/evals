@@ -5,7 +5,7 @@ from strands.models.model import Model
 
 from strands_evals.evaluators import Evaluator, OutputEvaluator
 from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
-from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.types import EvaluationClassification, EvaluationData, EvaluationOutput
 from strands_evals.types.trace import (
     AssistantMessage,
     TextContent,
@@ -411,3 +411,89 @@ class TestFormatTools:
         result = self.evaluator._format_tools(tools)
         expected = "- tool_a: First tool\n- tool_b: Second tool\n  Parameters:\n    - x (number (required)): A number"
         assert result == expected
+
+
+class TestDefaultAggregator:
+    """Tests for Evaluator._default_aggregator classification handling."""
+
+    def test_empty_outputs(self):
+        score, passed, reason = Evaluator._default_aggregator([])
+        assert score == 0.0
+        assert passed is False
+        assert reason == "No evaluation outputs produced"
+
+    def test_all_graded_behavior_unchanged(self):
+        """With no explicit classification (defaults to GRADED), behavior matches a plain average."""
+        outputs = [
+            EvaluationOutput(score=1.0, test_pass=True, reason="a"),
+            EvaluationOutput(score=0.0, test_pass=False, reason="b"),
+        ]
+        score, passed, reason = Evaluator._default_aggregator(outputs)
+        assert score == 0.5
+        assert passed is False
+        assert reason == "a | b"
+
+    def test_could_not_evaluate_excluded_from_aggregate(self):
+        """A COULD_NOT_EVALUATE output must not drag the score down or flip the verdict."""
+        outputs = [
+            EvaluationOutput(score=1.0, test_pass=True, reason="graded pass"),
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="precondition not met",
+                classification=EvaluationClassification.COULD_NOT_EVALUATE,
+            ),
+        ]
+        score, passed, reason = Evaluator._default_aggregator(outputs)
+        assert score == 1.0  # averaged over the single graded output only
+        assert passed is True  # the CNE output does not flip pass to False
+        assert reason == "graded pass"  # only graded reasons are combined
+
+    def test_informational_excluded_from_aggregate(self):
+        outputs = [
+            EvaluationOutput(score=0.4, test_pass=False, reason="graded"),
+            EvaluationOutput(
+                score=1.0,
+                test_pass=True,
+                reason="fyi",
+                classification=EvaluationClassification.INFORMATIONAL,
+            ),
+        ]
+        score, passed, reason = Evaluator._default_aggregator(outputs)
+        assert score == 0.4
+        assert passed is False
+        assert reason == "graded"
+
+    def test_all_non_graded_falls_back(self):
+        """When nothing is gradable, return a non-passing 0.0 with the combined non-graded reasons."""
+        outputs = [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="no tool errors to assess",
+                classification=EvaluationClassification.COULD_NOT_EVALUATE,
+            ),
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="diagnostic only",
+                classification=EvaluationClassification.INFORMATIONAL,
+            ),
+        ]
+        score, passed, reason = Evaluator._default_aggregator(outputs)
+        assert score == 0.0
+        assert passed is False
+        assert reason == "no tool errors to assess | diagnostic only"
+
+    def test_all_non_graded_without_reasons_uses_default_message(self):
+        outputs = [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                classification=EvaluationClassification.COULD_NOT_EVALUATE,
+            ),
+        ]
+        score, passed, reason = Evaluator._default_aggregator(outputs)
+        assert score == 0.0
+        assert passed is False
+        assert reason == "No gradable evaluation outputs"

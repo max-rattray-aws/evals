@@ -6,7 +6,7 @@ from strands.models.model import Model
 from typing_extensions import Any, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
-from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation import EvaluationClassification, EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import (
     AssistantMessage,
     Context,
@@ -83,9 +83,22 @@ class Evaluator(Generic[InputT, OutputT]):
         if not outputs:
             return (0.0, False, "No evaluation outputs produced")
 
-        avg_score = sum(o.score for o in outputs) / len(outputs)
-        all_pass = all(o.test_pass for o in outputs)
-        combined_reason = " | ".join(o.reason for o in outputs if o.reason)
+        # Only GRADED outputs contribute to the aggregate score/pass. Outputs marked
+        # COULD_NOT_EVALUATE or INFORMATIONAL are excluded so they neither drag the
+        # score down nor flip the pass/fail verdict. Their detail is still preserved
+        # in the report's detailed_results for downstream consumers. When no evaluator
+        # sets a classification (the default is GRADED), this is identical to averaging
+        # over all outputs, so existing evaluators are unaffected.
+        graded = [o for o in outputs if o.classification == EvaluationClassification.GRADED]
+
+        if not graded:
+            # Nothing gradable: surface the non-graded reasons without scoring the case.
+            combined_reason = " | ".join(o.reason for o in outputs if o.reason)
+            return (0.0, False, combined_reason or "No gradable evaluation outputs")
+
+        avg_score = sum(o.score for o in graded) / len(graded)
+        all_pass = all(o.test_pass for o in graded)
+        combined_reason = " | ".join(o.reason for o in graded if o.reason)
         return avg_score, all_pass, combined_reason
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
